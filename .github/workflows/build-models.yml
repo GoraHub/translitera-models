@@ -41,7 +41,7 @@ jobs:
           for p in zle-fi fi-zle; do
             d=tjs/models/Helsinki-NLP/opus-mt-tc-big-$p
             for f in config.json tokenizer.json onnx/encoder_model_quantized.onnx onnx/decoder_model_quantized.onnx onnx/decoder_with_past_model_quantized.onnx; do
-              cp "$d/$f" "out/tc-big-$p__$(basename $f)"
+              cp "$d/$f" "out/tc-big-${p}__$(basename $f)"
             done
           done
           (cd out && sha256sum * > SHA256SUMS && cat SHA256SUMS && ls -la)

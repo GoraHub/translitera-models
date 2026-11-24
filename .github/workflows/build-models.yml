@@ -1,0 +1,54 @@
+name: Build models
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Release tag to publish (empty = check only)
+        default: ''
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Converter (transformers.js 3.7.0 scripts, the tool behind the Xenova models)
+        run: |
+          git clone -q --depth 1 --branch 3.7.0 https://github.com/huggingface/transformers.js tjs
+          pip install -q --extra-index-url https://download.pytorch.org/whl/cpu -r tjs/scripts/requirements.txt
+          pip install -q --index-url https://download.pytorch.org/whl/cpu "torch==2.5.1"
+          pip install -q tokenizers sentencepiece sacremoses onnxscript
+      - name: Convert, quantize (int8 weights) and fix the word lists
+        run: |
+          cd tjs
+          for p in zle-fi fi-zle; do python -m scripts.convert --skip_onnxslim --model_id Helsinki-NLP/opus-mt-tc-big-$p; done
+          python - <<'PY'
+          import glob, os
+          from onnxruntime.quantization import quantize_dynamic, QuantType
+          for d in glob.glob("models/Helsinki-NLP/*/onnx"):
+              for n in ["encoder_model", "decoder_model", "decoder_with_past_model"]:
+                  quantize_dynamic(f"{d}/{n}.onnx", f"{d}/{n}_quantized.onnx", weight_type=QuantType.QInt8)
+          PY
+          for p in zle-fi fi-zle; do python ../tools/fix_tokenizer.py Helsinki-NLP/opus-mt-tc-big-$p models/Helsinki-NLP/opus-mt-tc-big-$p/tokenizer.json; done
+      - name: Translate test sentences with the app's own steps
+        run: python tools/tcbig_check.py tjs/models
+      - name: Package (one file per model file, named <pair>__<file>)
+        run: |
+          mkdir out
+          for p in zle-fi fi-zle; do
+            d=tjs/models/Helsinki-NLP/opus-mt-tc-big-$p
+            for f in config.json tokenizer.json onnx/encoder_model_quantized.onnx onnx/decoder_model_quantized.onnx onnx/decoder_with_past_model_quantized.onnx; do
+              cp "$d/$f" "out/tc-big-$p__$(basename $f)"
+            done
+          done
+          (cd out && sha256sum * > SHA256SUMS && cat SHA256SUMS && ls -la)
+      - name: Publish release
+        if: inputs.release != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.release }}" out/* --title "Models ${{ inputs.release }}" \
+            --notes "OPUS-MT tc-big Finnish ⇄ Ukrainian/Russian (Helsinki-NLP, CC-BY 4.0), converted to ONNX with int8 weights for the Translitera app. Built by this repository's workflow."
